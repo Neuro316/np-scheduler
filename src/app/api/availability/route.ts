@@ -11,9 +11,10 @@ function generateSmartDefaults(durationMinutes: number, count: number) {
   const slots: { start_time: string; end_time: string }[] = []
   const now = new Date()
   const preferredHours = [10, 14, 11]
+
   const checkDate = new Date(now)
   checkDate.setDate(checkDate.getDate() + 1)
-  checkDate.setHours(0, 0, 0, 0)
+
   let hourIndex = 0
   while (slots.length < count) {
     const dayOfWeek = checkDate.getDay()
@@ -22,11 +23,21 @@ function generateSmartDefaults(durationMinutes: number, count: number) {
       continue
     }
     const hour = preferredHours[hourIndex % preferredHours.length]
-    const slotStart = new Date(checkDate)
-    slotStart.setHours(hour, 0, 0, 0)
-    const slotEnd = new Date(slotStart)
-    slotEnd.setMinutes(slotEnd.getMinutes() + durationMinutes)
-    slots.push({ start_time: slotStart.toISOString(), end_time: slotEnd.toISOString() })
+
+    // Build date string as YYYY-MM-DD without timezone conversion
+    const year = checkDate.getFullYear()
+    const month = String(checkDate.getMonth() + 1).padStart(2, '0')
+    const day = String(checkDate.getDate()).padStart(2, '0')
+    const startH = String(hour).padStart(2, '0')
+    const endMin = hour * 60 + durationMinutes
+    const endH = String(Math.floor(endMin / 60)).padStart(2, '0')
+    const endM = String(endMin % 60).padStart(2, '0')
+
+    slots.push({
+      start_time: year + '-' + month + '-' + day + 'T' + startH + ':00:00',
+      end_time: year + '-' + month + '-' + day + 'T' + endH + ':' + endM + ':00',
+    })
+
     hourIndex++
     checkDate.setDate(checkDate.getDate() + 1)
   }
