@@ -285,7 +285,12 @@ async function createServiceAccountJWT(key: any): Promise<string> {
     new TextEncoder().encode(signInput)
   )
 
-  const sig = btoa(String.fromCharCode(...new Uint8Array(signature)))
+  const sigArray = new Uint8Array(signature)
+  let sigStr = ''
+  for (let i = 0; i < sigArray.length; i++) {
+    sigStr += String.fromCharCode(sigArray[i])
+  }
+  const sig = btoa(sigStr)
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 
   const headerB64 = header.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
