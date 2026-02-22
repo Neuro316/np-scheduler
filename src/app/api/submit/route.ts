@@ -60,20 +60,21 @@ export async function POST(req: NextRequest) {
           } catch (e) { console.error('[SUBMIT] Zoom error:', e) }
         }
 
-        // Calendar event WITHOUT attendees (service accounts cant invite without domain-wide delegation)
+        // Calendar event WITH attendees (domain-wide delegation enabled)
         if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
           try {
             const calToken = await getCalendarToken()
-            const calendarId = process.env.GOOGLE_CALENDAR_ID || 'cameron.s.allen@gmail.com'
+            const calendarId = process.env.GOOGLE_CALENDAR_ID || 'cameron@neuroprogeny.com'
             const eventBody: any = {
               summary: poll?.title || 'Meeting',
               description: (poll?.description || '') + (zoomJoinUrl ? '\n\nZoom: ' + zoomJoinUrl : '') + '\n\nParticipants: ' + emails.join(', '),
               start: { dateTime: best.start_time, timeZone: 'America/New_York' },
               end: { dateTime: best.end_time, timeZone: 'America/New_York' },
+          attendees: emails.map((email: string) => ({ email })),
             }
             if (zoomJoinUrl) eventBody.location = zoomJoinUrl
 
-            const calRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events', {
+            const calRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events?sendUpdates=all', {
               method: 'POST',
               headers: { 'Authorization': 'Bearer ' + calToken, 'Content-Type': 'application/json' },
               body: JSON.stringify(eventBody),
