@@ -4,66 +4,19 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import { createBrowserSupabase } from '@/lib/supabase'
 
-interface Poll {
-  id: string
-  title: string
-  description: string | null
-  duration_minutes: number
-  status: string
-  created_by: string
-  selected_slot_id: string | null
-  zoom_join_url: string | null
-}
-
-interface TimeSlot {
-  id: string
-  start_time: string
-  end_time: string
-  available_count: number
-  total_responses: number
-}
-
-interface Participant {
-  id: string
-  name: string
-  email: string
-  has_responded: boolean
-}
-
-interface Response {
-  slot_id: string
-  is_available: boolean
-}
-
-// Force display as ET regardless of browser timezone
-function toET(iso: string) {
-  const d = new Date(iso)
-  // Format in America/New_York timezone
-  return d.toLocaleString('en-US', { timeZone: 'America/New_York' })
-}
+interface Poll { id: string; title: string; description: string | null; duration_minutes: number; status: string; created_by: string; selected_slot_id: string | null; zoom_join_url: string | null }
+interface TimeSlot { id: string; start_time: string; end_time: string; available_count: number; total_responses: number }
+interface Participant { id: string; name: string; email: string; has_responded: boolean }
+interface Response { slot_id: string; is_available: boolean }
 
 function formatDate(iso: string) {
-  const d = new Date(iso)
-  return d.toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    timeZone: 'America/New_York',
-  })
+  return new Date(iso).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/New_York' })
 }
-
 function formatTime(iso: string) {
-  const d = new Date(iso)
-  return d.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZone: 'America/New_York',
-  })
+  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' })
 }
-
 function dateKey(iso: string) {
-  const d = new Date(iso)
-  return d.toLocaleDateString('en-US', { timeZone: 'America/New_York' })
+  return new Date(iso).toLocaleDateString('en-US', { timeZone: 'America/New_York' })
 }
 
 export default function VotePage() {
@@ -80,40 +33,31 @@ export default function VotePage() {
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
   const supabase = createBrowserSupabase()
 
   useEffect(() => {
     async function load() {
-      if (!pollId || !token) {
-        setError('Invalid voting link. Please check the URL from your email.')
-        setLoading(false)
-        return
-      }
+      if (!pollId || !token) { setError('Invalid voting link.'); setLoading(false); return }
       try {
-        const { data: pData, error: pErr } = await supabase
-          .from('poll_participants').select('*').eq('token', token).single()
+        const { data: pData, error: pErr } = await supabase.from('poll_participants').select('*').eq('token', token).single()
         if (pErr || !pData) { setError('Invalid or expired voting link.'); setLoading(false); return }
         setParticipant(pData)
         if (pData.has_responded) setSubmitted(true)
 
-        const { data: pollData, error: pollErr } = await supabase
-          .from('scheduling_polls').select('*').eq('id', pollId).single()
-        if (pollErr || !pollData) { setError('Poll not found.'); setLoading(false); return }
+        const { data: pollData } = await supabase.from('scheduling_polls').select('*').eq('id', pollId).single()
+        if (!pollData) { setError('Poll not found.'); setLoading(false); return }
         setPoll(pollData)
 
-        const { data: slotData } = await supabase
-          .from('poll_time_slots').select('*').eq('poll_id', pollId).order('start_time', { ascending: true })
+        const { data: slotData } = await supabase.from('poll_time_slots').select('*').eq('poll_id', pollId).order('start_time', { ascending: true })
         setSlots(slotData || [])
 
-        const { data: respData } = await supabase
-          .from('scheduling_responses').select('slot_id, is_available').eq('participant_id', pData.id)
+        const { data: respData } = await supabase.from('scheduling_responses').select('slot_id, is_available').eq('participant_id', pData.id)
         if (respData && respData.length > 0) {
           const respMap: Record<string, boolean> = {}
           respData.forEach((r: Response) => { respMap[r.slot_id] = r.is_available })
           setResponses(respMap)
         }
-      } catch (err) { setError('Something went wrong loading the poll.') }
+      } catch { setError('Something went wrong.') }
       setLoading(false)
     }
     load()
@@ -128,22 +72,39 @@ export default function VotePage() {
     if (!participant || !poll) return
     setSubmitting(true)
     try {
-      const upserts = slots.map(slot => ({
-        poll_id: poll.id, participant_id: participant.id,
-        slot_id: slot.id, is_available: responses[slot.id] || false,
-      }))
-      for (const upsert of upserts) {
-        const { data: existing } = await supabase
-          .from('scheduling_responses').select('id')
-          .eq('participant_id', upsert.participant_id).eq('slot_id', upsert.slot_id).single()
+      for (const slot of slots) {
+        const isAvail = responses[slot.id] || false
+        const { data: existing } = await supabase.from('scheduling_responses').select('id').eq('participant_id', participant.id).eq('slot_id', slot.id).single()
         if (existing) {
-          await supabase.from('scheduling_responses').update({ is_available: upsert.is_available }).eq('id', existing.id)
+          await supabase.from('scheduling_responses').update({ is_available: isAvail }).eq('id', existing.id)
         } else {
-          await supabase.from('scheduling_responses').insert(upsert)
+          await supabase.from('scheduling_responses').insert({ poll_id: poll.id, participant_id: participant.id, slot_id: slot.id, is_available: isAvail })
         }
       }
+
+      // Mark participant as responded
+      await supabase.from('poll_participants').update({ has_responded: true, responded_at: new Date().toISOString() }).eq('id', participant.id)
+
+      // Update slot counts
+      for (const slot of slots) {
+        const { count } = await supabase.from('scheduling_responses').select('*', { count: 'exact', head: true }).eq('slot_id', slot.id).eq('is_available', true)
+        const { count: totalCount } = await supabase.from('scheduling_responses').select('*', { count: 'exact', head: true }).eq('slot_id', slot.id)
+        await supabase.from('poll_time_slots').update({ available_count: count || 0, total_responses: totalCount || 0 }).eq('id', slot.id)
+      }
+
+      // Check if all participants responded
+      const { data: allParts } = await supabase.from('poll_participants').select('has_responded').eq('poll_id', poll.id)
+      const allResponded = allParts?.every(p => p.has_responded)
+      if (allResponded) {
+        // Find best slot
+        const { data: rankedSlots } = await supabase.from('poll_time_slots').select('*').eq('poll_id', poll.id).order('available_count', { ascending: false }).limit(1)
+        if (rankedSlots && rankedSlots.length > 0) {
+          await supabase.from('scheduling_polls').update({ status: 'completed', selected_slot_id: rankedSlots[0].id }).eq('id', poll.id)
+        }
+      }
+
       setSubmitted(true)
-    } catch (err) { setError('Failed to submit your responses. Please try again.') }
+    } catch { setError('Failed to submit. Please try again.') }
     setSubmitting(false)
   }
 
@@ -154,149 +115,82 @@ export default function VotePage() {
     return acc
   }, {} as Record<string, TimeSlot[]>)
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-np-blue/20 border-t-np-blue rounded-full animate-spin mx-auto" />
-          <p className="text-np-gray mt-4">Loading poll...</p>
-        </div>
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-2xl shadow-lg p-8 text-center">
-          <div className="w-14 h-14 bg-np-terra/10 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#E76F51" strokeWidth="2">
-              <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
-            </svg>
-          </div>
-          <h2 className="text-xl font-semibold text-np-dark mb-2">Oops</h2>
-          <p className="text-np-gray">{error}</p>
-        </div>
-      </div>
-    )
-  }
+  if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="w-12 h-12 border-4 border-np-blue/20 border-t-np-blue rounded-full animate-spin mx-auto" /></div>
+  if (error) return <div className="min-h-screen flex items-center justify-center p-4"><div className="max-w-md w-full bg-white rounded-2xl shadow-lg p-8 text-center"><h2 className="text-xl font-semibold text-np-dark mb-2">Oops</h2><p className="text-np-gray">{error}</p></div></div>
 
   if (poll?.status === 'completed') {
     const selectedSlot = slots.find(s => s.id === poll.selected_slot_id)
     return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-2xl shadow-lg p-8 text-center">
-          <div className="w-14 h-14 bg-np-sage/20 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#52B788" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
-          </div>
-          <h2 className="text-2xl font-bold text-np-dark mb-2" style={{ fontFamily: 'Cormorant Garamond, serif' }}>Meeting Scheduled!</h2>
-          <p className="text-np-gray mb-6">{poll.title}</p>
-          {selectedSlot && (
-            <div className="bg-np-blue/5 rounded-xl p-4 mb-6">
-              <p className="text-lg font-semibold text-np-blue">{formatDate(selectedSlot.start_time)}</p>
-              <p className="text-np-dark font-medium">{formatTime(selectedSlot.start_time)} - {formatTime(selectedSlot.end_time)} ET</p>
-            </div>
-          )}
-          {poll.zoom_join_url && (
-            <a href={poll.zoom_join_url} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 bg-[#2D8CFF] text-white px-6 py-3 rounded-xl font-medium hover:bg-[#1a7ae8] transition-all">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-3l4 3V6l-4 3V5a2 2 0 00-2-2H4z" /></svg>
-              Join Zoom Meeting
-            </a>
-          )}
-          <p className="text-sm text-np-gray/60 mt-6">A calendar invite has been sent to all participants.</p>
-        </div>
-      </div>
+      <div className="min-h-screen flex items-center justify-center p-4"><div className="max-w-md w-full bg-white rounded-2xl shadow-lg p-8 text-center">
+        <div className="w-14 h-14 bg-np-sage/20 rounded-full flex items-center justify-center mx-auto mb-4"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#52B788" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg></div>
+        <h2 className="text-2xl font-bold text-np-dark mb-2" style={{ fontFamily: 'Cormorant Garamond, serif' }}>Meeting Scheduled!</h2>
+        <p className="text-np-gray mb-6">{poll.title}</p>
+        {selectedSlot && <div className="bg-np-blue/5 rounded-xl p-4 mb-6"><p className="text-lg font-semibold text-np-blue">{formatDate(selectedSlot.start_time)}</p><p className="text-np-dark font-medium">{formatTime(selectedSlot.start_time)} - {formatTime(selectedSlot.end_time)} ET</p></div>}
+        {poll.zoom_join_url && <a href={poll.zoom_join_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 bg-[#2D8CFF] text-white px-6 py-3 rounded-xl font-medium">Join Zoom Meeting</a>}
+      </div></div>
     )
   }
 
-  if (submitted) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-2xl shadow-lg p-8 text-center">
-          <div className="w-14 h-14 bg-np-teal/10 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#2A9D8F" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
-          </div>
-          <h2 className="text-2xl font-bold text-np-dark mb-2" style={{ fontFamily: 'Cormorant Garamond, serif' }}>Response Recorded!</h2>
-          <p className="text-np-gray mb-2">Thanks, {participant?.name}.</p>
-          <p className="text-sm text-np-gray/70">You'll receive an email once everyone has responded and the meeting is confirmed.</p>
-        </div>
-      </div>
-    )
-  }
+  if (submitted) return (
+    <div className="min-h-screen flex items-center justify-center p-4"><div className="max-w-md w-full bg-white rounded-2xl shadow-lg p-8 text-center">
+      <div className="w-14 h-14 bg-np-teal/10 rounded-full flex items-center justify-center mx-auto mb-4"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#2A9D8F" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg></div>
+      <h2 className="text-2xl font-bold text-np-dark mb-2" style={{ fontFamily: 'Cormorant Garamond, serif' }}>Response Recorded!</h2>
+      <p className="text-np-gray mb-2">Thanks, {participant?.name}.</p>
+      <p className="text-sm text-np-gray/70">You'll receive an email once the meeting is confirmed.</p>
+    </div></div>
+  )
 
   const availableCount = Object.values(responses).filter(Boolean).length
 
   return (
-    <div className="min-h-screen py-8 px-4">
-      <div className="max-w-2xl mx-auto">
-        <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
-          <div className="flex items-start gap-4">
-            <div className="w-12 h-12 bg-np-blue/10 rounded-xl flex items-center justify-center flex-shrink-0">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#476B8E" strokeWidth="2">
-                <rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
-              </svg>
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold text-np-dark" style={{ fontFamily: 'Cormorant Garamond, serif' }}>{poll?.title}</h1>
-              {poll?.description && <p className="text-np-gray mt-1">{poll.description}</p>}
-              <p className="text-sm text-np-gray/70 mt-2">{poll?.duration_minutes} min meeting</p>
-            </div>
+    <div className="min-h-screen py-8 px-4"><div className="max-w-2xl mx-auto">
+      <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
+        <div className="flex items-start gap-4">
+          <div className="w-12 h-12 bg-np-blue/10 rounded-xl flex items-center justify-center flex-shrink-0">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#476B8E" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
           </div>
-          <div className="mt-4 pt-4 border-t border-gray-100">
-            <p className="text-sm text-np-gray">
-              Hi <span className="font-medium text-np-dark">{participant?.name}</span>, tap the times you're available. Green = available.
-            </p>
-            <p className="text-xs text-np-gray/60 mt-1">All times shown in Eastern Time (ET)</p>
+          <div>
+            <h1 className="text-2xl font-bold text-np-dark" style={{ fontFamily: 'Cormorant Garamond, serif' }}>{poll?.title}</h1>
+            {poll?.description && <p className="text-np-gray mt-1">{poll.description}</p>}
+            <p className="text-sm text-np-gray/70 mt-2">{poll?.duration_minutes} min meeting</p>
           </div>
         </div>
-
-        {Object.entries(groupedSlots).map(([dk, dateSlots]) => (
-          <div key={dk} className="mb-6">
-            <h3 className="text-sm font-semibold text-np-gray uppercase tracking-wider mb-3 px-1">
-              {formatDate(dateSlots[0].start_time)}
-            </h3>
-            <div className="space-y-2">
-              {dateSlots.map(slot => {
-                const isAvail = responses[slot.id] || false
-                return (
-                  <button key={slot.id} onClick={() => toggleSlot(slot.id)}
-                    className={`w-full flex items-center justify-between p-4 rounded-xl border-2 transition-all ${isAvail ? 'bg-np-sage/10 border-np-sage text-np-dark shadow-sm' : 'bg-white border-gray-200 text-np-gray hover:border-gray-300'}`}>
-                    <div className="flex items-center gap-3">
-                      <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${isAvail ? 'bg-np-sage border-np-sage' : 'border-gray-300'}`}>
-                        {isAvail && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>}
-                      </div>
-                      <p className={`font-medium ${isAvail ? 'text-np-dark' : 'text-np-gray'}`}>
-                        {formatTime(slot.start_time)} - {formatTime(slot.end_time)}
-                      </p>
-                    </div>
-                    <span className={`text-sm font-medium px-3 py-1 rounded-full ${isAvail ? 'bg-np-sage/20 text-np-sage' : 'bg-gray-100 text-gray-400'}`}>
-                      {isAvail ? 'Available' : 'Unavailable'}
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        ))}
-
-        <div className="bg-white rounded-2xl shadow-lg p-6 sticky bottom-4">
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-np-gray">
-              <span className="font-semibold text-np-sage">{availableCount}</span> of{' '}
-              <span className="font-medium">{slots.length}</span> slots marked available
-            </p>
-            <button onClick={handleSubmit} disabled={submitting}
-              className="bg-np-blue text-white px-8 py-3 rounded-xl font-medium hover:bg-np-blue-dark transition-all shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed">
-              {submitting ? (
-                <span className="flex items-center gap-2">
-                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Submitting...
-                </span>
-              ) : 'Submit Availability'}
-            </button>
-          </div>
+        <div className="mt-4 pt-4 border-t border-gray-100">
+          <p className="text-sm text-np-gray">Hi <span className="font-medium text-np-dark">{participant?.name}</span>, tap the times you're available. Green = available.</p>
+          <p className="text-xs text-np-gray/60 mt-1">All times shown in Eastern Time (ET)</p>
         </div>
       </div>
-    </div>
+
+      {Object.entries(groupedSlots).map(([dk, dateSlots]) => (
+        <div key={dk} className="mb-6">
+          <h3 className="text-sm font-semibold text-np-gray uppercase tracking-wider mb-3 px-1">{formatDate(dateSlots[0].start_time)}</h3>
+          <div className="space-y-2">
+            {dateSlots.map(slot => {
+              const isAvail = responses[slot.id] || false
+              return (
+                <button key={slot.id} onClick={() => toggleSlot(slot.id)} className={`w-full flex items-center justify-between p-4 rounded-xl border-2 transition-all ${isAvail ? 'bg-np-sage/10 border-np-sage text-np-dark shadow-sm' : 'bg-white border-gray-200 text-np-gray hover:border-gray-300'}`}>
+                  <div className="flex items-center gap-3">
+                    <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${isAvail ? 'bg-np-sage border-np-sage' : 'border-gray-300'}`}>
+                      {isAvail && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>}
+                    </div>
+                    <p className={`font-medium ${isAvail ? 'text-np-dark' : 'text-np-gray'}`}>{formatTime(slot.start_time)} - {formatTime(slot.end_time)}</p>
+                  </div>
+                  <span className={`text-sm font-medium px-3 py-1 rounded-full ${isAvail ? 'bg-np-sage/20 text-np-sage' : 'bg-gray-100 text-gray-400'}`}>{isAvail ? 'Available' : 'Unavailable'}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+
+      <div className="bg-white rounded-2xl shadow-lg p-6 sticky bottom-4">
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-np-gray"><span className="font-semibold text-np-sage">{availableCount}</span> of <span className="font-medium">{slots.length}</span> slots marked available</p>
+          <button onClick={handleSubmit} disabled={submitting} className="bg-np-blue text-white px-8 py-3 rounded-xl font-medium hover:bg-np-blue-dark transition-all shadow-lg disabled:opacity-50">
+            {submitting ? <span className="flex items-center gap-2"><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Submitting...</span> : 'Submit Availability'}
+          </button>
+        </div>
+      </div>
+    </div></div>
   )
 }
