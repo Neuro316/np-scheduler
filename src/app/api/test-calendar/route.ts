@@ -40,12 +40,12 @@ export async function GET(req: NextRequest) {
       description: 'If you can see this event, calendar integration is working!',
       start: { dateTime: startISO, timeZone: 'America/New_York' },
       end: { dateTime: endISO, timeZone: 'America/New_York' },
-      attendees: [{ email: 'cameron.s.allen@gmail.com' }, { email: 'cameron@neuroprogeny.com' }],
+      
     }
-    log('Creating PERMANENT event on: ' + calendarId)
+    log('Creating on: ' + calendarId)
     log('Event: tomorrow 3:00-3:30 PM ET')
 
-    const calRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events?sendUpdates=all', {
+    const calRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
       body: JSON.stringify(eventBody),
