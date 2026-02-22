@@ -76,6 +76,20 @@ export default function AdminPage() {
     }
   }
 
+
+  async function deletePoll(pollId: string) {
+    if (!confirm('Delete this poll? This cannot be undone.')) return
+    const res = await fetch('/api/polls', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ poll_id: pollId }),
+    })
+    const data = await res.json()
+    if (data.success) {
+      fetchPolls()
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -123,7 +137,15 @@ export default function AdminPage() {
 
               return (
                 <div key={poll.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                  {/* Summary row */}
+                  {/* Delete + Summary row */}
+                <div className="flex justify-end px-4 pt-2">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); deletePoll(poll.id) }}
+                    className="text-xs text-red-400 hover:text-red-600 transition-colors"
+                  >
+                    Delete
+                  </button>
+                </div>
                   <button
                     onClick={() => setExpandedPoll(expanded ? null : poll.id)}
                     className="w-full p-6 text-left flex items-center justify-between hover:bg-gray-50/50 transition-colors"

@@ -156,3 +156,26 @@ export async function GET() {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
+
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const { poll_id } = await req.json()
+    if (!poll_id) {
+      return NextResponse.json({ error: 'poll_id required' }, { status: 400 })
+    }
+
+    const supabase = createAdminSupabase()
+
+    // Delete in order: responses, participants, slots, then poll
+    await supabase.from('poll_responses').delete().eq('poll_id', poll_id)
+    await supabase.from('poll_participants').delete().eq('poll_id', poll_id)
+    await supabase.from('poll_time_slots').delete().eq('poll_id', poll_id)
+    await supabase.from('scheduling_polls').delete().eq('id', poll_id)
+
+    return NextResponse.json({ success: true })
+  } catch (err) {
+    console.error('Delete poll error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
