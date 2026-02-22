@@ -33,7 +33,6 @@ export async function POST(req: NextRequest) {
       console.log('[SUBMIT] All responded for poll', poll_id)
       const { data: best } = await supabase.from('poll_time_slots').select('*').eq('poll_id', poll_id).order('available_count', { ascending: false }).limit(1).single()
       if (best) {
-        console.log('[SUBMIT] Best slot:', best.start_time, '->', best.end_time)
         await supabase.from('scheduling_polls').update({ status: 'completed', selected_slot_id: best.id }).eq('id', poll_id)
 
         const { data: poll } = await supabase.from('scheduling_polls').select('*').eq('id', poll_id).single()
@@ -43,7 +42,6 @@ export async function POST(req: NextRequest) {
 
         if (process.env.ZOOM_ACCOUNT_ID) {
           try {
-            console.log('[SUBMIT] Creating Zoom...')
             const zoomToken = await getZoomToken()
             const zoomRes = await fetch('https://api.zoom.us/v2/users/me/meetings', {
               method: 'POST',
@@ -57,37 +55,31 @@ export async function POST(req: NextRequest) {
             if (zoomRes.ok) {
               const zoomData = await zoomRes.json()
               zoomJoinUrl = zoomData.join_url
-              console.log('[SUBMIT] Zoom OK:', zoomJoinUrl)
               await supabase.from('scheduling_polls').update({ zoom_join_url: zoomData.join_url, zoom_meeting_id: String(zoomData.id) }).eq('id', poll_id)
             } else { console.error('[SUBMIT] Zoom FAIL:', zoomRes.status, await zoomRes.text()) }
           } catch (e) { console.error('[SUBMIT] Zoom error:', e) }
         }
 
+        // Calendar event WITHOUT attendees (service accounts cant invite without domain-wide delegation)
         if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
           try {
-            console.log('[SUBMIT] Creating Calendar event...')
             const calToken = await getCalendarToken()
             const calendarId = process.env.GOOGLE_CALENDAR_ID || 'cameron.s.allen@gmail.com'
-            console.log('[SUBMIT] Cal ID:', calendarId, 'Token:', calToken.substring(0, 20))
-
             const eventBody: any = {
               summary: poll?.title || 'Meeting',
-              description: (poll?.description || '') + (zoomJoinUrl ? '\n\nZoom: ' + zoomJoinUrl : ''),
+              description: (poll?.description || '') + (zoomJoinUrl ? '\n\nZoom: ' + zoomJoinUrl : '') + '\n\nParticipants: ' + emails.join(', '),
               start: { dateTime: best.start_time, timeZone: 'America/New_York' },
               end: { dateTime: best.end_time, timeZone: 'America/New_York' },
-              attendees: emails.map((e: string) => ({ email: e })),
-              reminders: { useDefault: true },
             }
             if (zoomJoinUrl) eventBody.location = zoomJoinUrl
-            console.log('[SUBMIT] Event:', JSON.stringify(eventBody))
 
-            const calRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events?sendUpdates=all', {
+            const calRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events', {
               method: 'POST',
               headers: { 'Authorization': 'Bearer ' + calToken, 'Content-Type': 'application/json' },
               body: JSON.stringify(eventBody),
             })
             const calBody = await calRes.text()
-            console.log('[SUBMIT] Cal status:', calRes.status, 'Body:', calBody)
+            console.log('[SUBMIT] Cal status:', calRes.status, calBody)
             if (calRes.ok) {
               const calData = JSON.parse(calBody)
               await supabase.from('scheduling_polls').update({ calendar_event_id: calData.id }).eq('id', poll_id)
