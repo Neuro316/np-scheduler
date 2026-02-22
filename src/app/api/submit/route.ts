@@ -70,7 +70,6 @@ export async function POST(req: NextRequest) {
               description: (poll?.description || '') + (zoomJoinUrl ? '\n\nZoom: ' + zoomJoinUrl : '') + '\n\nParticipants: ' + emails.join(', '),
               start: { dateTime: best.start_time, timeZone: 'America/New_York' },
               end: { dateTime: best.end_time, timeZone: 'America/New_York' },
-          attendees: emails.map((email: string) => ({ email })),
             }
             if (zoomJoinUrl) eventBody.location = zoomJoinUrl
 
@@ -93,7 +92,31 @@ export async function POST(req: NextRequest) {
           const endD = new Date(best.end_time)
           const dateStr = startD.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' })
           const timeStr = startD.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' - ' + endD.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET'
-          for (const p of parts) {
+    
+      // Generate ICS calendar invite
+      const startISO = startD.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+      const endISO = endD.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+      const icsContent = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//Neuro Progeny//NP Scheduler//EN',
+        'METHOD:REQUEST',
+        'BEGIN:VEVENT',
+        'DTSTART:' + startISO,
+        'DTEND:' + endISO,
+        'SUMMARY:' + (poll?.title || 'Meeting'),
+        'DESCRIPTION:' + (zoomJoinUrl ? 'Join Zoom: ' + zoomJoinUrl : ''),
+        'LOCATION:' + (zoomJoinUrl || ''),
+        'ORGANIZER;CN=Cameron Allen:mailto:cameron@neuroprogeny.com',
+        ...emails.map(e => 'ATTENDEE;RSVP=TRUE:mailto:' + e),
+        'UID:' + poll_id + '@neuroprogeny.com',
+        'STATUS:CONFIRMED',
+        'SEQUENCE:0',
+        'END:VEVENT',
+        'END:VCALENDAR',
+      ].join('\r\n')
+
+      for (const p of parts) {
             try {
               const html = '<div style="font-family:Helvetica,Arial,sans-serif;background:#f0f4f8;padding:40px 20px;"><div style="max-width:520px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);"><div style="background:#476B8E;padding:28px 32px;"><h1 style="margin:0;color:#fff;font-size:22px;">Neuro Progeny</h1></div><div style="padding:32px;"><div style="text-align:center;margin-bottom:20px;"><div style="display:inline-block;width:48px;height:48px;background:#52B788;border-radius:50%;line-height:48px;"><span style="color:white;font-size:24px;">&#10003;</span></div></div><h2 style="text-align:center;color:#1E293B;margin:0 0 8px;">Meeting Confirmed</h2><p style="color:#333;">Hi ' + p.name + ',</p><p style="color:#555;">Everyone has responded and your meeting is locked in:</p><div style="background:#476B8E10;border-radius:12px;padding:16px;margin:20px 0;text-align:center;"><p style="font-size:18px;font-weight:600;color:#476B8E;margin:0;">' + dateStr + '</p><p style="font-size:16px;color:#1E293B;margin:4px 0 0;">' + timeStr + '</p></div>' + (zoomJoinUrl ? '<div style="text-align:center;margin:24px 0;"><a href="' + zoomJoinUrl + '" style="display:inline-block;background:#2D8CFF;color:white;padding:12px 32px;border-radius:12px;text-decoration:none;font-weight:600;">Join Zoom Meeting</a></div>' : '') + '<p style="color:#94A3B8;font-size:13px;text-align:center;">A calendar invite has also been sent.</p></div></div></div>'
               await fetch('https://api.sendgrid.com/v3/mail/send', {
@@ -104,6 +127,7 @@ export async function POST(req: NextRequest) {
                   from: { email: 'shane@neuroprogeny.com', name: 'Shane Granau' },
                   subject: 'Confirmed: ' + (poll?.title || 'Meeting'),
                   content: [{ type: 'text/html', value: html }],
+              attachments: [{ content: Buffer.from(icsContent).toString('base64'), filename: 'invite.ics', type: 'application/ics', disposition: 'attachment' }],
                 }),
               })
             } catch (e) { console.error('[SUBMIT] Email error:', e) }
