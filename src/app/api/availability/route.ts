@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+const CALENDARS_TO_CHECK = [
+  'cameron.s.allen@gmail.com',
+  'cameron@neuroprogeny.com',
+]
+
 export async function GET(req: NextRequest) {
   const duration = parseInt(req.nextUrl.searchParams.get('duration') || '30')
   const count = parseInt(req.nextUrl.searchParams.get('count') || '3')
-  const calendarId = process.env.GOOGLE_CALENDAR_ID || 'cameron.s.allen@gmail.com'
 
   if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
     try {
-      const slots = await getGoogleCalendarSlots(calendarId, duration, count)
+      const slots = await getGoogleCalendarSlots(duration, count)
       return NextResponse.json({ slots, source: 'google_calendar' })
     } catch (err) {
       console.error('Google Calendar error:', err)
@@ -18,10 +22,9 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ slots, source: 'defaults' })
 }
 
-// Eastern Time: UTC-5 (EST, Nov-Mar) or UTC-4 (EDT, Mar-Nov)
 const ET_OFFSET = 5
 
-async function getGoogleCalendarSlots(calendarId: string, durationMinutes: number, count: number) {
+async function getGoogleCalendarSlots(durationMinutes: number, count: number) {
   const accessToken = await getCalendarAccessToken()
   const now = new Date()
   const timeMax = new Date(now)
@@ -34,7 +37,7 @@ async function getGoogleCalendarSlots(calendarId: string, durationMinutes: numbe
       timeMin: now.toISOString(),
       timeMax: timeMax.toISOString(),
       timeZone: 'America/New_York',
-      items: [{ id: calendarId }],
+      items: CALENDARS_TO_CHECK.map(id => ({ id })),
     }),
   })
 
@@ -44,20 +47,27 @@ async function getGoogleCalendarSlots(calendarId: string, durationMinutes: numbe
   }
 
   const freebusyData = await freebusyRes.json()
-  const busyTimes: { start: Date; end: Date }[] = (
-    freebusyData.calendars?.[calendarId]?.busy || []
-  ).map((b: { start: string; end: string }) => ({
-    start: new Date(b.start),
-    end: new Date(b.end),
-  }))
 
-  console.log('Busy times found:', busyTimes.length)
+  // Merge busy times from ALL calendars
+  const busyTimes: { start: Date; end: Date }[] = []
+  for (const calId of CALENDARS_TO_CHECK) {
+    const calBusy = freebusyData.calendars?.[calId]?.busy || []
+    const calErrors = freebusyData.calendars?.[calId]?.errors
+    if (calErrors) {
+      console.log('Calendar ' + calId + ' errors:', JSON.stringify(calErrors))
+    }
+    console.log('Calendar ' + calId + ': ' + calBusy.length + ' busy blocks')
+    for (const b of calBusy) {
+      busyTimes.push({ start: new Date(b.start), end: new Date(b.end) })
+    }
+  }
+
+  console.log('Total busy times across all calendars:', busyTimes.length)
 
   const slots: { start_time: string; end_time: string }[] = []
   const usedDays = new Set<string>()
 
   for (let dayOffset = 1; dayOffset <= 14 && slots.length < count; dayOffset++) {
-    // Build date in ET
     const dayUTC = new Date(now.getTime() + dayOffset * 24 * 60 * 60 * 1000)
     const etDate = new Date(dayUTC.getTime() - ET_OFFSET * 60 * 60 * 1000)
     const year = etDate.getUTCFullYear()
@@ -65,20 +75,17 @@ async function getGoogleCalendarSlots(calendarId: string, durationMinutes: numbe
     const day = etDate.getUTCDate()
     const dow = etDate.getUTCDay()
 
-    // Skip weekends
     if (dow === 0 || dow === 6) continue
 
     const dayKey = year + '-' + month + '-' + day
     if (usedDays.has(dayKey)) continue
 
-    // Only 9am - 2pm ET
     let foundSlot = false
     for (let etHour = 9; etHour < 14 && !foundSlot; etHour++) {
       for (let min = 0; min < 60 && !foundSlot; min += 30) {
         const slotStartUTC = new Date(Date.UTC(year, month, day, etHour + ET_OFFSET, min, 0))
         const slotEndUTC = new Date(slotStartUTC.getTime() + durationMinutes * 60 * 1000)
 
-        // Don't go past 2pm ET
         const cutoffUTC = new Date(Date.UTC(year, month, day, 14 + ET_OFFSET, 0, 0))
         if (slotEndUTC > cutoffUTC) continue
         if (slotStartUTC < now) continue
