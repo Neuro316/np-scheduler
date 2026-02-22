@@ -15,10 +15,10 @@ async function sendInviteEmail(
   const slotList = timeSlots.map(s => {
     const start = new Date(s.start_time)
     const end = new Date(s.end_time)
-    const dateStr = start.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-    const startStr = start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-    const endStr = end.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-    return '<li style="margin-bottom:8px;color:#333;">' + dateStr + ' - ' + startStr + ' to ' + endStr + '</li>'
+    const dateStr = start.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'America/New_York' })
+    const startStr = start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' })
+    const endStr = end.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' })
+    return '<li style="margin-bottom:8px;color:#333;">' + dateStr + ' - ' + startStr + ' to ' + endStr + ' ET</li>'
   }).join('')
 
   const html = '<div style="font-family:Helvetica,Arial,sans-serif;background:#f0f4f8;padding:40px 20px;"><div style="max-width:520px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);"><div style="background:#476B8E;padding:28px 32px;"><h1 style="margin:0;color:#fff;font-size:22px;">Neuro Progeny</h1></div><div style="padding:32px;"><p style="color:#333;font-size:16px;margin:0 0 8px;">Hi ' + participantName + ',</p><p style="color:#555;font-size:15px;line-height:1.6;margin:0 0 20px;">You have been invited to find a time for <strong>' + pollTitle + '</strong>.' + (pollDescription ? ' ' + pollDescription : '') + '</p><p style="color:#555;font-size:14px;margin:0 0 12px;font-weight:600;">Available time options:</p><ul style="padding-left:20px;margin:0 0 24px;">' + slotList + '</ul><div style="text-align:center;margin:28px 0;"><a href="' + votingUrl + '" style="display:inline-block;background:#476B8E;color:#fff;text-decoration:none;padding:14px 36px;border-radius:12px;font-size:16px;font-weight:600;">Vote on Availability</a></div><p style="color:#999;font-size:12px;text-align:center;">Click the button above to mark which times work for you.</p></div></div></div>'
@@ -42,6 +42,14 @@ async function sendInviteEmail(
   return { sent: true }
 }
 
+// Append ET offset to a bare datetime string so Supabase stores it correctly
+function toETTimestamp(dt: string): string {
+  // If already has timezone info, return as-is
+  if (dt.includes('+') || dt.includes('Z') || dt.match(/-\d{2}:\d{2}$/)) return dt
+  // Append EST offset (-05:00) so Supabase interprets as Eastern Time
+  return dt + '-05:00'
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
@@ -62,8 +70,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to create poll' }, { status: 500 })
     }
 
+    // Store times with ET offset so Supabase knows they're Eastern Time
     const slotInserts = time_slots.map((s: { start_time: string; end_time: string }) => ({
-      poll_id: poll.id, start_time: s.start_time, end_time: s.end_time,
+      poll_id: poll.id,
+      start_time: toETTimestamp(s.start_time),
+      end_time: toETTimestamp(s.end_time),
     }))
     const { error: slotErr } = await supabase.from('poll_time_slots').insert(slotInserts)
     if (slotErr) {
@@ -85,11 +96,17 @@ export async function POST(req: NextRequest) {
     const votingLinks = []
     const emailResults = []
 
+    // Build slots with ET offset for email display
+    const slotsForEmail = time_slots.map((s: { start_time: string; end_time: string }) => ({
+      start_time: toETTimestamp(s.start_time),
+      end_time: toETTimestamp(s.end_time),
+    }))
+
     for (const p of (createdParticipants || [])) {
       const votingUrl = baseUrl + '/poll/' + poll.id + '?token=' + p.token
       votingLinks.push({ name: p.name, email: p.email, voting_url: votingUrl })
 
-      const emailResult = await sendInviteEmail(p.email, p.name, title, description, votingUrl, time_slots)
+      const emailResult = await sendInviteEmail(p.email, p.name, title, description, votingUrl, slotsForEmail)
       emailResults.push({ email: p.email, ...emailResult })
 
       if (emailResult.sent) {
