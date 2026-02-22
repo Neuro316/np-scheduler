@@ -30,28 +30,30 @@ export async function POST(req: NextRequest) {
     const allDone = allP?.every(p => p.has_responded)
 
     if (allDone) {
+      console.log('[SUBMIT] All responded for poll', poll_id)
       const { data: best } = await supabase.from('poll_time_slots').select('*').eq('poll_id', poll_id).order('available_count', { ascending: false }).limit(1).single()
       if (best) {
+        console.log('[SUBMIT] Best slot:', best.start_time, '->', best.end_time)
         await supabase.from('scheduling_polls').update({ status: 'completed', selected_slot_id: best.id }).eq('id', poll_id)
 
-        // Load full poll and participants for Zoom + Calendar
         const { data: poll } = await supabase.from('scheduling_polls').select('*').eq('id', poll_id).single()
         const { data: parts } = await supabase.from('poll_participants').select('*').eq('poll_id', poll_id)
         const emails = (parts || []).map((p: any) => p.email)
         let zoomJoinUrl: string | null = null
 
         // Create Zoom meeting
-        if (process.env.ZOOM_ACCOUNT_ID && poll?.location === 'zoom') {
+        if (process.env.ZOOM_ACCOUNT_ID) {
           try {
+            console.log('[SUBMIT] Creating Zoom...')
             const zoomToken = await getZoomToken()
             const zoomRes = await fetch('https://api.zoom.us/v2/users/me/meetings', {
               method: 'POST',
               headers: { 'Authorization': 'Bearer ' + zoomToken, 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                topic: poll.title,
+                topic: poll?.title || 'Meeting',
                 type: 2,
                 start_time: best.start_time,
-                duration: poll.duration_minutes,
+                duration: poll?.duration_minutes || 30,
                 timezone: 'America/New_York',
                 settings: { host_video: true, participant_video: true, join_before_host: true, waiting_room: false, meeting_invitees: emails.map((e: string) => ({ email: e })) },
               }),
@@ -59,16 +61,22 @@ export async function POST(req: NextRequest) {
             if (zoomRes.ok) {
               const zoomData = await zoomRes.json()
               zoomJoinUrl = zoomData.join_url
+              console.log('[SUBMIT] Zoom created:', zoomJoinUrl)
               await supabase.from('scheduling_polls').update({ zoom_join_url: zoomData.join_url, zoom_meeting_id: String(zoomData.id) }).eq('id', poll_id)
+            } else {
+              console.error('[SUBMIT] Zoom failed:', zoomRes.status, await zoomRes.text())
             }
-          } catch (e) { console.error('Zoom error:', e) }
+          } catch (e) { console.error('[SUBMIT] Zoom error:', e) }
         }
 
         // Create Google Calendar event
         if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
           try {
+            console.log('[SUBMIT] Creating Calendar event...')
             const calToken = await getCalendarToken()
             const calendarId = process.env.GOOGLE_CALENDAR_ID || 'cameron.s.allen@gmail.com'
+            console.log('[SUBMIT] Calendar ID:', calendarId)
+
             const eventBody: any = {
               summary: poll?.title || 'Meeting',
               description: (poll?.description || '') + (zoomJoinUrl ? '\n\nZoom: ' + zoomJoinUrl : ''),
@@ -78,16 +86,24 @@ export async function POST(req: NextRequest) {
               reminders: { useDefault: true },
             }
             if (zoomJoinUrl) eventBody.location = zoomJoinUrl
+            console.log('[SUBMIT] Event body:', JSON.stringify(eventBody))
+
             const calRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events?sendUpdates=all', {
               method: 'POST',
               headers: { 'Authorization': 'Bearer ' + calToken, 'Content-Type': 'application/json' },
               body: JSON.stringify(eventBody),
             })
+
+            const calBody = await calRes.text()
+            console.log('[SUBMIT] Calendar status:', calRes.status)
+            console.log('[SUBMIT] Calendar response:', calBody)
+
             if (calRes.ok) {
-              const calData = await calRes.json()
+              const calData = JSON.parse(calBody)
+              console.log('[SUBMIT] Event created:', calData.id)
               await supabase.from('scheduling_polls').update({ calendar_event_id: calData.id }).eq('id', poll_id)
             }
-          } catch (e) { console.error('Calendar error:', e) }
+          } catch (e) { console.error('[SUBMIT] Calendar error:', e) }
         }
 
         // Send confirmation emails
@@ -109,14 +125,15 @@ export async function POST(req: NextRequest) {
                   content: [{ type: 'text/html', value: html }],
                 }),
               })
-            } catch (e) { console.error('Email error:', e) }
+              console.log('[SUBMIT] Email sent to', p.email)
+            } catch (e) { console.error('[SUBMIT] Email error:', e) }
           }
         }
       }
     }
 
     return NextResponse.json({ success: true, all_responded: allDone })
-  } catch (err) { console.error('Submit error:', err); return NextResponse.json({ error: 'Server error' }, { status: 500 }) }
+  } catch (err) { console.error('[SUBMIT] Fatal:', err); return NextResponse.json({ error: 'Server error' }, { status: 500 }) }
 }
 
 async function getZoomToken(): Promise<string> {
@@ -125,25 +142,28 @@ async function getZoomToken(): Promise<string> {
     headers: { 'Authorization': 'Basic ' + Buffer.from(process.env.ZOOM_CLIENT_ID + ':' + process.env.ZOOM_CLIENT_SECRET).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
   })
   const data = await res.json()
-  if (!data.access_token) throw new Error('Zoom token failed')
+  if (!data.access_token) throw new Error('Zoom token failed: ' + JSON.stringify(data))
   return data.access_token
 }
 
 async function getCalendarToken(): Promise<string> {
   const key = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY!)
   const now = Math.floor(Date.now() / 1000)
-  const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-  const claim = btoa(JSON.stringify({ iss: key.client_email, scope: 'https://www.googleapis.com/auth/calendar', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url')
+  const claim = Buffer.from(JSON.stringify({
+    iss: key.client_email,
+    scope: 'https://www.googleapis.com/auth/calendar',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now,
+    exp: now + 3600,
+  })).toString('base64url')
   const signInput = header + '.' + claim
-  const pemContents = key.private_key.replace(/-----BEGIN PRIVATE KEY-----\n?/, '').replace(/\n?-----END PRIVATE KEY-----\n?/, '').replace(/\n/g, '')
-  const binaryKey = Uint8Array.from(atob(pemContents), (c: string) => c.charCodeAt(0))
+  const pemContents = key.private_key.replace(/-----BEGIN PRIVATE KEY-----\n?/g, '').replace(/\n?-----END PRIVATE KEY-----\n?/g, '').replace(/\n/g, '')
+  const binaryKey = Buffer.from(pemContents, 'base64')
   const cryptoKey = await crypto.subtle.importKey('pkcs8', binaryKey, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign'])
   const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', cryptoKey, new TextEncoder().encode(signInput))
-  const sigArray = new Uint8Array(signature)
-  let sigStr = ''
-  for (let i = 0; i < sigArray.length; i++) sigStr += String.fromCharCode(sigArray[i])
-  const sig = btoa(sigStr).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-  const jwt = header + '.' + claim + '.' + sig
+  const sig = Buffer.from(signature).toString('base64url')
+  const jwt = signInput + '.' + sig
   const tokenRes = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: jwt }) })
   const tokenData = await tokenRes.json()
   if (!tokenData.access_token) throw new Error('Calendar token failed: ' + JSON.stringify(tokenData))
