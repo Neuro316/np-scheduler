@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-const CALENDARS_TO_CHECK = [
-  'cameron.s.allen@gmail.com',
-  'cameron@neuroprogeny.com',
-]
-
 export async function GET(req: NextRequest) {
   const duration = parseInt(req.nextUrl.searchParams.get('duration') || '30')
   const count = parseInt(req.nextUrl.searchParams.get('count') || '3')
@@ -23,6 +18,7 @@ export async function GET(req: NextRequest) {
 }
 
 const ET_OFFSET = 5
+const PRIMARY_CALENDAR = 'cameron.s.allen@gmail.com'
 
 async function getGoogleCalendarSlots(durationMinutes: number, count: number) {
   const accessToken = await getCalendarAccessToken()
@@ -30,40 +26,65 @@ async function getGoogleCalendarSlots(durationMinutes: number, count: number) {
   const timeMax = new Date(now)
   timeMax.setDate(timeMax.getDate() + 14)
 
-  const freebusyRes = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
-    method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      timeMin: now.toISOString(),
-      timeMax: timeMax.toISOString(),
-      timeZone: 'America/New_York',
-      items: CALENDARS_TO_CHECK.map(id => ({ id })),
-    }),
+  // Step 1: Get all calendars on this account
+  const listRes = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+    headers: { 'Authorization': 'Bearer ' + accessToken },
   })
 
-  if (!freebusyRes.ok) {
-    const err = await freebusyRes.text()
-    throw new Error('FreeBusy API error: ' + freebusyRes.status + ' ' + err)
+  let calendarIds = [PRIMARY_CALENDAR]
+  if (listRes.ok) {
+    const listData = await listRes.json()
+    calendarIds = (listData.items || []).map((c: { id: string }) => c.id)
+    console.log('Found calendars:', calendarIds.length, calendarIds)
+  } else {
+    console.log('CalendarList failed, using primary only')
   }
 
-  const freebusyData = await freebusyRes.json()
-
-  // Merge busy times from ALL calendars
+  // Step 2: Get events from all calendars
   const busyTimes: { start: Date; end: Date }[] = []
-  for (const calId of CALENDARS_TO_CHECK) {
-    const calBusy = freebusyData.calendars?.[calId]?.busy || []
-    const calErrors = freebusyData.calendars?.[calId]?.errors
-    if (calErrors) {
-      console.log('Calendar ' + calId + ' errors:', JSON.stringify(calErrors))
-    }
-    console.log('Calendar ' + calId + ': ' + calBusy.length + ' busy blocks')
-    for (const b of calBusy) {
-      busyTimes.push({ start: new Date(b.start), end: new Date(b.end) })
+
+  for (const calId of calendarIds) {
+    try {
+      const eventsUrl = 'https://www.googleapis.com/calendar/v3/calendars/' +
+        encodeURIComponent(calId) +
+        '/events?timeMin=' + encodeURIComponent(now.toISOString()) +
+        '&timeMax=' + encodeURIComponent(timeMax.toISOString()) +
+        '&singleEvents=true&orderBy=startTime&maxResults=250'
+
+      const eventsRes = await fetch(eventsUrl, {
+        headers: { 'Authorization': 'Bearer ' + accessToken },
+      })
+
+      if (eventsRes.ok) {
+        const eventsData = await eventsRes.json()
+        const events = eventsData.items || []
+        let count = 0
+        for (const event of events) {
+          // Skip declined events
+          if (event.status === 'cancelled') continue
+          // Skip transparent (free) events
+          if (event.transparency === 'transparent') continue
+
+          const start = event.start?.dateTime || event.start?.date
+          const end = event.end?.dateTime || event.end?.date
+          if (start && end) {
+            busyTimes.push({ start: new Date(start), end: new Date(end) })
+            count++
+          }
+        }
+        console.log('Calendar ' + calId + ': ' + count + ' events')
+      } else {
+        const err = await eventsRes.text()
+        console.log('Calendar ' + calId + ' error: ' + eventsRes.status)
+      }
+    } catch (err) {
+      console.log('Calendar ' + calId + ' fetch failed')
     }
   }
 
   console.log('Total busy times across all calendars:', busyTimes.length)
 
+  // Step 3: Find open slots 9am-2pm ET, one per day
   const slots: { start_time: string; end_time: string }[] = []
   const usedDays = new Set<string>()
 
