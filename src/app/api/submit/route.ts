@@ -41,7 +41,6 @@ export async function POST(req: NextRequest) {
         const emails = (parts || []).map((p: any) => p.email)
         let zoomJoinUrl: string | null = null
 
-        // Create Zoom meeting
         if (process.env.ZOOM_ACCOUNT_ID) {
           try {
             console.log('[SUBMIT] Creating Zoom...')
@@ -50,32 +49,26 @@ export async function POST(req: NextRequest) {
               method: 'POST',
               headers: { 'Authorization': 'Bearer ' + zoomToken, 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                topic: poll?.title || 'Meeting',
-                type: 2,
-                start_time: best.start_time,
-                duration: poll?.duration_minutes || 30,
-                timezone: 'America/New_York',
+                topic: poll?.title || 'Meeting', type: 2, start_time: best.start_time,
+                duration: poll?.duration_minutes || 30, timezone: 'America/New_York',
                 settings: { host_video: true, participant_video: true, join_before_host: true, waiting_room: false, meeting_invitees: emails.map((e: string) => ({ email: e })) },
               }),
             })
             if (zoomRes.ok) {
               const zoomData = await zoomRes.json()
               zoomJoinUrl = zoomData.join_url
-              console.log('[SUBMIT] Zoom created:', zoomJoinUrl)
+              console.log('[SUBMIT] Zoom OK:', zoomJoinUrl)
               await supabase.from('scheduling_polls').update({ zoom_join_url: zoomData.join_url, zoom_meeting_id: String(zoomData.id) }).eq('id', poll_id)
-            } else {
-              console.error('[SUBMIT] Zoom failed:', zoomRes.status, await zoomRes.text())
-            }
+            } else { console.error('[SUBMIT] Zoom FAIL:', zoomRes.status, await zoomRes.text()) }
           } catch (e) { console.error('[SUBMIT] Zoom error:', e) }
         }
 
-        // Create Google Calendar event
         if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
           try {
             console.log('[SUBMIT] Creating Calendar event...')
             const calToken = await getCalendarToken()
             const calendarId = process.env.GOOGLE_CALENDAR_ID || 'cameron.s.allen@gmail.com'
-            console.log('[SUBMIT] Calendar ID:', calendarId)
+            console.log('[SUBMIT] Cal ID:', calendarId, 'Token:', calToken.substring(0, 20))
 
             const eventBody: any = {
               summary: poll?.title || 'Meeting',
@@ -86,27 +79,22 @@ export async function POST(req: NextRequest) {
               reminders: { useDefault: true },
             }
             if (zoomJoinUrl) eventBody.location = zoomJoinUrl
-            console.log('[SUBMIT] Event body:', JSON.stringify(eventBody))
+            console.log('[SUBMIT] Event:', JSON.stringify(eventBody))
 
             const calRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events?sendUpdates=all', {
               method: 'POST',
               headers: { 'Authorization': 'Bearer ' + calToken, 'Content-Type': 'application/json' },
               body: JSON.stringify(eventBody),
             })
-
             const calBody = await calRes.text()
-            console.log('[SUBMIT] Calendar status:', calRes.status)
-            console.log('[SUBMIT] Calendar response:', calBody)
-
+            console.log('[SUBMIT] Cal status:', calRes.status, 'Body:', calBody)
             if (calRes.ok) {
               const calData = JSON.parse(calBody)
-              console.log('[SUBMIT] Event created:', calData.id)
               await supabase.from('scheduling_polls').update({ calendar_event_id: calData.id }).eq('id', poll_id)
             }
-          } catch (e) { console.error('[SUBMIT] Calendar error:', e) }
+          } catch (e) { console.error('[SUBMIT] Cal error:', e) }
         }
 
-        // Send confirmation emails
         if (process.env.SENDGRID_API_KEY && parts) {
           const startD = new Date(best.start_time)
           const endD = new Date(best.end_time)
@@ -125,7 +113,6 @@ export async function POST(req: NextRequest) {
                   content: [{ type: 'text/html', value: html }],
                 }),
               })
-              console.log('[SUBMIT] Email sent to', p.email)
             } catch (e) { console.error('[SUBMIT] Email error:', e) }
           }
         }
@@ -154,8 +141,7 @@ async function getCalendarToken(): Promise<string> {
     iss: key.client_email,
     scope: 'https://www.googleapis.com/auth/calendar',
     aud: 'https://oauth2.googleapis.com/token',
-    iat: now,
-    exp: now + 3600,
+    iat: now, exp: now + 3600,
   })).toString('base64url')
   const signInput = header + '.' + claim
   const pemContents = key.private_key.replace(/-----BEGIN PRIVATE KEY-----\n?/g, '').replace(/\n?-----END PRIVATE KEY-----\n?/g, '').replace(/\n/g, '')
