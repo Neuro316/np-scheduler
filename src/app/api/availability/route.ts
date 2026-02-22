@@ -18,23 +18,22 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ slots, source: 'defaults' })
 }
 
+// Eastern Time: UTC-5 (EST, Nov-Mar) or UTC-4 (EDT, Mar-Nov)
+const ET_OFFSET = 5
+
 async function getGoogleCalendarSlots(calendarId: string, durationMinutes: number, count: number) {
   const accessToken = await getCalendarAccessToken()
-
   const now = new Date()
-  const timeMin = new Date(now)
-  timeMin.setHours(now.getHours() + 1, 0, 0, 0)
-
-  const timeMax = new Date(timeMin)
+  const timeMax = new Date(now)
   timeMax.setDate(timeMax.getDate() + 14)
 
   const freebusyRes = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      timeMin: timeMin.toISOString(),
+      timeMin: now.toISOString(),
       timeMax: timeMax.toISOString(),
-      timeZone: 'America/Chicago',
+      timeZone: 'America/New_York',
       items: [{ id: calendarId }],
     }),
   })
@@ -52,48 +51,59 @@ async function getGoogleCalendarSlots(calendarId: string, durationMinutes: numbe
     end: new Date(b.end),
   }))
 
+  console.log('Busy times found:', busyTimes.length)
+
   const slots: { start_time: string; end_time: string }[] = []
-  const checkDate = new Date(now)
-  checkDate.setDate(checkDate.getDate() + 1)
-  checkDate.setHours(0, 0, 0, 0)
+  const usedDays = new Set<string>()
 
-  while (slots.length < count && checkDate < timeMax) {
-    const dayOfWeek = checkDate.getDay()
-    if (dayOfWeek === 0 || dayOfWeek === 6) {
-      checkDate.setDate(checkDate.getDate() + 1)
-      continue
-    }
+  for (let dayOffset = 1; dayOffset <= 14 && slots.length < count; dayOffset++) {
+    // Build date in ET
+    const dayUTC = new Date(now.getTime() + dayOffset * 24 * 60 * 60 * 1000)
+    const etDate = new Date(dayUTC.getTime() - ET_OFFSET * 60 * 60 * 1000)
+    const year = etDate.getUTCFullYear()
+    const month = etDate.getUTCMonth()
+    const day = etDate.getUTCDate()
+    const dow = etDate.getUTCDay()
 
-    for (let hour = 9; hour < 17 && slots.length < count; hour++) {
-      for (let min = 0; min < 60 && slots.length < count; min += 30) {
-        const slotStart = new Date(checkDate)
-        slotStart.setHours(hour, min, 0, 0)
-        const slotEnd = new Date(slotStart)
-        slotEnd.setMinutes(slotEnd.getMinutes() + durationMinutes)
+    // Skip weekends
+    if (dow === 0 || dow === 6) continue
 
-        const endOfDay = new Date(checkDate)
-        endOfDay.setHours(17, 0, 0, 0)
-        if (slotEnd > endOfDay) continue
-        if (slotStart < now) continue
+    const dayKey = year + '-' + month + '-' + day
+    if (usedDays.has(dayKey)) continue
 
-        const isConflict = busyTimes.some(busy => slotStart < busy.end && slotEnd > busy.start)
+    // Only 9am - 2pm ET
+    let foundSlot = false
+    for (let etHour = 9; etHour < 14 && !foundSlot; etHour++) {
+      for (let min = 0; min < 60 && !foundSlot; min += 30) {
+        const slotStartUTC = new Date(Date.UTC(year, month, day, etHour + ET_OFFSET, min, 0))
+        const slotEndUTC = new Date(slotStartUTC.getTime() + durationMinutes * 60 * 1000)
+
+        // Don't go past 2pm ET
+        const cutoffUTC = new Date(Date.UTC(year, month, day, 14 + ET_OFFSET, 0, 0))
+        if (slotEndUTC > cutoffUTC) continue
+        if (slotStartUTC < now) continue
+
+        const isConflict = busyTimes.some(busy => slotStartUTC < busy.end && slotEndUTC > busy.start)
 
         if (!isConflict) {
-          const year = slotStart.getFullYear()
-          const month = String(slotStart.getMonth() + 1).padStart(2, '0')
-          const day = String(slotStart.getDate()).padStart(2, '0')
-          const sH = String(slotStart.getHours()).padStart(2, '0')
-          const sM = String(slotStart.getMinutes()).padStart(2, '0')
-          const eH = String(slotEnd.getHours()).padStart(2, '0')
-          const eM = String(slotEnd.getMinutes()).padStart(2, '0')
+          const sH = String(etHour).padStart(2, '0')
+          const sM = String(min).padStart(2, '0')
+          const totalEndMin = etHour * 60 + min + durationMinutes
+          const eH = String(Math.floor(totalEndMin / 60)).padStart(2, '0')
+          const eM = String(totalEndMin % 60).padStart(2, '0')
+          const yr = String(year)
+          const mo = String(month + 1).padStart(2, '0')
+          const dy = String(day).padStart(2, '0')
+
           slots.push({
-            start_time: year + '-' + month + '-' + day + 'T' + sH + ':' + sM + ':00',
-            end_time: year + '-' + month + '-' + day + 'T' + eH + ':' + eM + ':00',
+            start_time: yr + '-' + mo + '-' + dy + 'T' + sH + ':' + sM + ':00',
+            end_time: yr + '-' + mo + '-' + dy + 'T' + eH + ':' + eM + ':00',
           })
+          usedDays.add(dayKey)
+          foundSlot = true
         }
       }
     }
-    checkDate.setDate(checkDate.getDate() + 1)
   }
   return slots
 }
@@ -155,7 +165,7 @@ async function getCalendarAccessToken(): Promise<string> {
 function generateSmartDefaults(durationMinutes: number, count: number) {
   const slots: { start_time: string; end_time: string }[] = []
   const now = new Date()
-  const preferredHours = [10, 14, 11]
+  const preferredHours = [9, 10, 11]
   const checkDate = new Date(now)
   checkDate.setDate(checkDate.getDate() + 1)
   let hourIndex = 0
