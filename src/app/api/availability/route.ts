@@ -3,28 +3,166 @@ import { NextRequest, NextResponse } from 'next/server'
 export async function GET(req: NextRequest) {
   const duration = parseInt(req.nextUrl.searchParams.get('duration') || '30')
   const count = parseInt(req.nextUrl.searchParams.get('count') || '3')
+  const calendarId = process.env.GOOGLE_CALENDAR_ID || 'cameron.s.allen@gmail.com'
+
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+    try {
+      const slots = await getGoogleCalendarSlots(calendarId, duration, count)
+      return NextResponse.json({ slots, source: 'google_calendar' })
+    } catch (err) {
+      console.error('Google Calendar error:', err)
+    }
+  }
+
   const slots = generateSmartDefaults(duration, count)
   return NextResponse.json({ slots, source: 'defaults' })
+}
+
+async function getGoogleCalendarSlots(calendarId: string, durationMinutes: number, count: number) {
+  const accessToken = await getCalendarAccessToken()
+
+  const now = new Date()
+  const timeMin = new Date(now)
+  timeMin.setHours(now.getHours() + 1, 0, 0, 0)
+
+  const timeMax = new Date(timeMin)
+  timeMax.setDate(timeMax.getDate() + 14)
+
+  const freebusyRes = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      timeZone: 'America/Chicago',
+      items: [{ id: calendarId }],
+    }),
+  })
+
+  if (!freebusyRes.ok) {
+    const err = await freebusyRes.text()
+    throw new Error('FreeBusy API error: ' + freebusyRes.status + ' ' + err)
+  }
+
+  const freebusyData = await freebusyRes.json()
+  const busyTimes: { start: Date; end: Date }[] = (
+    freebusyData.calendars?.[calendarId]?.busy || []
+  ).map((b: { start: string; end: string }) => ({
+    start: new Date(b.start),
+    end: new Date(b.end),
+  }))
+
+  const slots: { start_time: string; end_time: string }[] = []
+  const checkDate = new Date(now)
+  checkDate.setDate(checkDate.getDate() + 1)
+  checkDate.setHours(0, 0, 0, 0)
+
+  while (slots.length < count && checkDate < timeMax) {
+    const dayOfWeek = checkDate.getDay()
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      checkDate.setDate(checkDate.getDate() + 1)
+      continue
+    }
+
+    for (let hour = 9; hour < 17 && slots.length < count; hour++) {
+      for (let min = 0; min < 60 && slots.length < count; min += 30) {
+        const slotStart = new Date(checkDate)
+        slotStart.setHours(hour, min, 0, 0)
+        const slotEnd = new Date(slotStart)
+        slotEnd.setMinutes(slotEnd.getMinutes() + durationMinutes)
+
+        const endOfDay = new Date(checkDate)
+        endOfDay.setHours(17, 0, 0, 0)
+        if (slotEnd > endOfDay) continue
+        if (slotStart < now) continue
+
+        const isConflict = busyTimes.some(busy => slotStart < busy.end && slotEnd > busy.start)
+
+        if (!isConflict) {
+          const year = slotStart.getFullYear()
+          const month = String(slotStart.getMonth() + 1).padStart(2, '0')
+          const day = String(slotStart.getDate()).padStart(2, '0')
+          const sH = String(slotStart.getHours()).padStart(2, '0')
+          const sM = String(slotStart.getMinutes()).padStart(2, '0')
+          const eH = String(slotEnd.getHours()).padStart(2, '0')
+          const eM = String(slotEnd.getMinutes()).padStart(2, '0')
+          slots.push({
+            start_time: year + '-' + month + '-' + day + 'T' + sH + ':' + sM + ':00',
+            end_time: year + '-' + month + '-' + day + 'T' + eH + ':' + eM + ':00',
+          })
+        }
+      }
+    }
+    checkDate.setDate(checkDate.getDate() + 1)
+  }
+  return slots
+}
+
+async function getCalendarAccessToken(): Promise<string> {
+  const key = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY!)
+  const now = Math.floor(Date.now() / 1000)
+
+  const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+
+  const claim = btoa(JSON.stringify({
+    iss: key.client_email,
+    scope: 'https://www.googleapis.com/auth/calendar.readonly',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now,
+    exp: now + 3600,
+  })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+
+  const signInput = header + '.' + claim
+
+  const pemContents = key.private_key
+    .replace(/-----BEGIN PRIVATE KEY-----\n?/, '')
+    .replace(/\n?-----END PRIVATE KEY-----\n?/, '')
+    .replace(/\n/g, '')
+  const binaryKey = Uint8Array.from(atob(pemContents), (c: string) => c.charCodeAt(0))
+
+  const cryptoKey = await crypto.subtle.importKey(
+    'pkcs8', binaryKey, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']
+  )
+
+  const signature = await crypto.subtle.sign(
+    'RSASSA-PKCS1-v1_5', cryptoKey, new TextEncoder().encode(signInput)
+  )
+
+  const sigArray = new Uint8Array(signature)
+  let sigStr = ''
+  for (let i = 0; i < sigArray.length; i++) {
+    sigStr += String.fromCharCode(sigArray[i])
+  }
+  const sig = btoa(sigStr).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+
+  const jwt = header + '.' + claim + '.' + sig
+
+  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: jwt,
+    }),
+  })
+
+  const tokenData = await tokenRes.json()
+  if (!tokenData.access_token) throw new Error('Failed to get token: ' + JSON.stringify(tokenData))
+  return tokenData.access_token
 }
 
 function generateSmartDefaults(durationMinutes: number, count: number) {
   const slots: { start_time: string; end_time: string }[] = []
   const now = new Date()
   const preferredHours = [10, 14, 11]
-
   const checkDate = new Date(now)
   checkDate.setDate(checkDate.getDate() + 1)
-
   let hourIndex = 0
   while (slots.length < count) {
     const dayOfWeek = checkDate.getDay()
-    if (dayOfWeek === 0 || dayOfWeek === 6) {
-      checkDate.setDate(checkDate.getDate() + 1)
-      continue
-    }
+    if (dayOfWeek === 0 || dayOfWeek === 6) { checkDate.setDate(checkDate.getDate() + 1); continue }
     const hour = preferredHours[hourIndex % preferredHours.length]
-
-    // Build date string as YYYY-MM-DD without timezone conversion
     const year = checkDate.getFullYear()
     const month = String(checkDate.getMonth() + 1).padStart(2, '0')
     const day = String(checkDate.getDate()).padStart(2, '0')
@@ -32,12 +170,10 @@ function generateSmartDefaults(durationMinutes: number, count: number) {
     const endMin = hour * 60 + durationMinutes
     const endH = String(Math.floor(endMin / 60)).padStart(2, '0')
     const endM = String(endMin % 60).padStart(2, '0')
-
     slots.push({
       start_time: year + '-' + month + '-' + day + 'T' + startH + ':00:00',
       end_time: year + '-' + month + '-' + day + 'T' + endH + ':' + endM + ':00',
     })
-
     hourIndex++
     checkDate.setDate(checkDate.getDate() + 1)
   }
