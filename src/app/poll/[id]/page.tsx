@@ -35,6 +35,43 @@ interface Response {
   is_available: boolean
 }
 
+// Parse datetime string WITHOUT timezone conversion
+function parseLocalTime(iso: string) {
+  // Handle "2026-02-23T09:00:00" as literal ET time
+  const match = iso.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/)
+  if (!match) return { year: 2026, month: 1, day: 1, hour: 9, minute: 0 }
+  return {
+    year: parseInt(match[1]),
+    month: parseInt(match[2]),
+    day: parseInt(match[3]),
+    hour: parseInt(match[4]),
+    minute: parseInt(match[5]),
+  }
+}
+
+function formatDate(iso: string) {
+  const t = parseLocalTime(iso)
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+  const months = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December']
+  // Use UTC constructor to avoid timezone shift
+  const d = new Date(Date.UTC(t.year, t.month - 1, t.day))
+  return days[d.getUTCDay()] + ', ' + months[t.month - 1] + ' ' + t.day
+}
+
+function formatTime(iso: string) {
+  const t = parseLocalTime(iso)
+  const h = t.hour % 12 || 12
+  const ampm = t.hour < 12 ? 'AM' : 'PM'
+  const min = t.minute.toString().padStart(2, '0')
+  return h + ':' + min + ' ' + ampm
+}
+
+function dateKey(iso: string) {
+  const t = parseLocalTime(iso)
+  return t.year + '-' + t.month + '-' + t.day
+}
+
 export default function VotePage() {
   const params = useParams()
   const searchParams = useSearchParams()
@@ -52,7 +89,6 @@ export default function VotePage() {
 
   const supabase = createBrowserSupabase()
 
-  // Load poll data
   useEffect(() => {
     async function load() {
       if (!pollId || !token) {
@@ -62,7 +98,6 @@ export default function VotePage() {
       }
 
       try {
-        // Load participant by token
         const { data: pData, error: pErr } = await supabase
           .from('poll_participants')
           .select('*')
@@ -77,12 +112,10 @@ export default function VotePage() {
 
         setParticipant(pData)
 
-        // Check if already responded
         if (pData.has_responded) {
           setSubmitted(true)
         }
 
-        // Load poll
         const { data: pollData, error: pollErr } = await supabase
           .from('scheduling_polls')
           .select('*')
@@ -97,7 +130,6 @@ export default function VotePage() {
 
         setPoll(pollData)
 
-        // Load time slots
         const { data: slotData } = await supabase
           .from('poll_time_slots')
           .select('*')
@@ -106,7 +138,6 @@ export default function VotePage() {
 
         setSlots(slotData || [])
 
-        // Load existing responses
         const { data: respData } = await supabase
           .from('scheduling_responses')
           .select('slot_id, is_available')
@@ -128,7 +159,6 @@ export default function VotePage() {
     load()
   }, [pollId, token])
 
-  // Toggle a slot
   const toggleSlot = useCallback((slotId: string) => {
     if (submitted || poll?.status === 'completed') return
     setResponses(prev => ({
@@ -137,13 +167,11 @@ export default function VotePage() {
     }))
   }, [submitted, poll?.status])
 
-  // Submit votes
   const handleSubmit = async () => {
     if (!participant || !poll) return
     setSubmitting(true)
 
     try {
-      // Upsert all responses
       const upserts = slots.map(slot => ({
         poll_id: poll.id,
         participant_id: participant.id,
@@ -179,26 +207,14 @@ export default function VotePage() {
     setSubmitting(false)
   }
 
-  // Format date helpers
-  const formatDate = (iso: string) => {
-    const d = new Date(iso)
-    return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
-  }
-
-  const formatTime = (iso: string) => {
-    const d = new Date(iso)
-    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-  }
-
   // Group slots by date
   const groupedSlots = slots.reduce((acc, slot) => {
-    const dateKey = new Date(slot.start_time).toDateString()
-    if (!acc[dateKey]) acc[dateKey] = []
-    acc[dateKey].push(slot)
+    const dk = dateKey(slot.start_time)
+    if (!acc[dk]) acc[dk] = []
+    acc[dk].push(slot)
     return acc
   }, {} as Record<string, TimeSlot[]>)
 
-  // ─── Loading ───
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -210,7 +226,6 @@ export default function VotePage() {
     )
   }
 
-  // ─── Error ───
   if (error) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
@@ -229,7 +244,6 @@ export default function VotePage() {
     )
   }
 
-  // ─── Poll Completed ───
   if (poll?.status === 'completed') {
     const selectedSlot = slots.find(s => s.id === poll.selected_slot_id)
     return (
@@ -251,13 +265,13 @@ export default function VotePage() {
                 {formatDate(selectedSlot.start_time)}
               </p>
               <p className="text-np-dark font-medium">
-                {formatTime(selectedSlot.start_time)} - {formatTime(selectedSlot.end_time)}
+                {formatTime(selectedSlot.start_time)} - {formatTime(selectedSlot.end_time)} ET
               </p>
             </div>
           )}
 
           {poll.zoom_join_url && (
-            <a
+            
               href={poll.zoom_join_url}
               target="_blank"
               rel="noopener noreferrer"
@@ -279,7 +293,6 @@ export default function VotePage() {
     )
   }
 
-  // ─── Already Submitted ───
   if (submitted) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
@@ -301,13 +314,11 @@ export default function VotePage() {
     )
   }
 
-  // ─── Voting UI ───
   const availableCount = Object.values(responses).filter(Boolean).length
 
   return (
     <div className="min-h-screen py-8 px-4">
       <div className="max-w-2xl mx-auto">
-        {/* Header */}
         <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
           <div className="flex items-start gap-4">
             <div className="w-12 h-12 bg-np-blue/10 rounded-xl flex items-center justify-center flex-shrink-0">
@@ -336,12 +347,12 @@ export default function VotePage() {
               Hi <span className="font-medium text-np-dark">{participant?.name}</span>,
               tap the times you're available. Green = available.
             </p>
+            <p className="text-xs text-np-gray/60 mt-1">All times shown in Eastern Time (ET)</p>
           </div>
         </div>
 
-        {/* Time Slots by Date */}
-        {Object.entries(groupedSlots).map(([dateKey, dateSlots]) => (
-          <div key={dateKey} className="mb-6">
+        {Object.entries(groupedSlots).map(([dk, dateSlots]) => (
+          <div key={dk} className="mb-6">
             <h3 className="text-sm font-semibold text-np-gray uppercase tracking-wider mb-3 px-1">
               {formatDate(dateSlots[0].start_time)}
             </h3>
@@ -361,7 +372,6 @@ export default function VotePage() {
                     `}
                   >
                     <div className="flex items-center gap-3">
-                      {/* Toggle indicator */}
                       <div className={`
                         w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all
                         ${isAvail
@@ -397,7 +407,6 @@ export default function VotePage() {
           </div>
         ))}
 
-        {/* Submit */}
         <div className="bg-white rounded-2xl shadow-lg p-6 sticky bottom-4">
           <div className="flex items-center justify-between">
             <p className="text-sm text-np-gray">
