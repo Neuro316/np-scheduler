@@ -12,7 +12,8 @@ export async function GET(req: NextRequest) {
       iss: key.client_email,
       scope: 'https://www.googleapis.com/auth/calendar',
       aud: 'https://oauth2.googleapis.com/token',
-      iat: now, exp: now + 3600,
+      sub: process.env.GOOGLE_CALENDAR_ID || 'cameron@neuroprogeny.com',
+    iat: now, exp: now + 3600,
     })).toString('base64url')
     const signInput = header + '.' + claim
     const pemContents = key.private_key.replace(/-----BEGIN PRIVATE KEY-----\n?/g, '').replace(/\n?-----END PRIVATE KEY-----\n?/g, '').replace(/\n/g, '')
@@ -27,7 +28,7 @@ export async function GET(req: NextRequest) {
     const accessToken = tokenData.access_token
     log('OK: Got access token')
 
-    const calendarId = process.env.GOOGLE_CALENDAR_ID || 'cameron.s.allen@gmail.com'
+    const calendarId = process.env.GOOGLE_CALENDAR_ID || 'cameron@neuroprogeny.com'
 
     // Create a PERMANENT test event for tomorrow at 3pm ET - DO NOT DELETE
     const tomorrow = new Date()
@@ -40,12 +41,13 @@ export async function GET(req: NextRequest) {
       description: 'If you can see this event, calendar integration is working!',
       start: { dateTime: startISO, timeZone: 'America/New_York' },
       end: { dateTime: endISO, timeZone: 'America/New_York' },
+    attendees: [{ email: 'shanegrilahva@gmail.com' }, { email: 'sgranau@gmail.com' }],
       
     }
     log('Creating on: ' + calendarId)
     log('Event: tomorrow 3:00-3:30 PM ET')
 
-    const calRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events', {
+    const calRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events?sendUpdates=all', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
       body: JSON.stringify(eventBody),
