@@ -65,7 +65,8 @@ export async function POST(req: NextRequest) {
           description: poll.description || '',
           start: selectedSlot.start_time,
           end: selectedSlot.end_time,
-          zoomLink: zoomJoinUrl,
+          attendees: participantEmails,
+        zoomLink: zoomJoinUrl,
           calendarId: process.env.GOOGLE_CALENDAR_ID || 'cameron@neuroprogeny.com',
         })
       } catch (err) {
@@ -195,6 +196,7 @@ async function createCalendarEvent(params: {
   description: string
   start: string
   end: string
+  attendees: string[]
   zoomLink: string | null
   calendarId: string
 }): Promise<string | null> {
@@ -216,7 +218,8 @@ async function createCalendarEvent(params: {
     description: params.description + (params.zoomLink ? `\n\nZoom: ${params.zoomLink}` : ''),
     start: { dateTime: params.start, timeZone: 'America/New_York' },
     end: { dateTime: params.end, timeZone: 'America/New_York' },
-    reminders: { useDefault: true },
+    attendees: params.attendees.map((email: string) => ({ email })),
+      reminders: { useDefault: true },
   }
 
   if (params.zoomLink) {
